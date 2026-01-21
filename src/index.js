@@ -132,21 +132,16 @@ async function run() {
 
     // Create session with Notion MCP server
     // The AI will have access to all Notion tools and decide which to use
-    // Use env to pass NOTION_TOKEN to the subprocess - more reliable on CI
+    // Try to use globally installed notion-mcp-server first, fallback to npx
+    // Pre-installing avoids npx download timing issues on CI
     session = await client.createSession({
       model,
       streaming: true, // Use streaming mode for better stream lifecycle management
       mcpServers: {
         notion: {
           type: 'local',
-          command: 'npx',
-          args: ['-y', '@notionhq/notion-mcp-server'],
-          env: {
-            NOTION_TOKEN: notionToken,
-            PATH: process.env.PATH,
-            HOME: process.env.HOME,
-            NODE_OPTIONS: '--no-warnings', // Suppress experimental warnings
-          },
+          command: '/bin/bash',
+          args: ['-c', `NOTION_TOKEN=${notionToken} notion-mcp-server 2>/dev/null || NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
           tools: ['*'], // Allow all Notion tools
         },
       },

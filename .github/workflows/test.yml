@@ -29,6 +29,9 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Pre-install Notion MCP Server
+        run: npm install -g @notionhq/notion-mcp-server
+
       - name: Update Notion Documentation
         uses: ./
         with:
