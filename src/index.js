@@ -1,10 +1,24 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
-const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
-const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
-const { spawn } = require('child_process');
+const {
+  formatPRFiles,
+  formatTreeFiles,
+  createPRChangelogEntry,
+  createSyncChangelogEntry,
+} = require('./utils');
 
+/**
+ * Main entry point for the GitHub Action.
+ * Uses the GitHub Copilot SDK with Notion MCP server to update documentation.
+ * The AI decides which Notion API tools to use based on natural language prompts.
+ */
 async function run() {
+  // Dynamic import for ESM-only Copilot SDK
+  const { CopilotClient } = await import('@github/copilot-sdk');
+
+  let client = null;
+  let session = null;
+
   try {
     // Read inputs
     const notionToken = core.getInput('notion-token', { required: true });
@@ -14,17 +28,17 @@ async function run() {
     // Get context
     const context = github.context;
     const octokit = github.getOctokit(githubToken);
-    
+
     // Determine if this is a PR event or workflow_dispatch
     const { pull_request: pr } = context.payload;
     const isWorkflowDispatch = context.eventName === 'workflow_dispatch';
-    
+
     let changelogEntry;
-    
+
     if (pr) {
       // PR-based update
       core.info('Running in PR mode...');
-      
+
       // Fetch PR details
       const { data: pullRequest } = await octokit.rest.pulls.get({
         owner: context.repo.owner,
@@ -39,28 +53,18 @@ async function run() {
         pull_number: pr.number,
       });
 
-      const filesList = files.map(f => `- ${f.filename} (${f.status}, +${f.additions}/-${f.deletions})`).join('\n');
-      
-      changelogEntry = {
-        type: 'pr',
-        date: new Date().toISOString().split('T')[0],
-        title: pullRequest.title,
-        prNumber: pullRequest.number,
-        author: pullRequest.user.login,
-        url: pullRequest.html_url,
-        summary: pullRequest.body || 'No description provided',
-        files: filesList,
-      };
+      const filesList = formatPRFiles(files);
+      changelogEntry = createPRChangelogEntry(pullRequest, filesList);
     } else if (isWorkflowDispatch) {
       // Manual trigger - update from main branch
       core.info('Running in workflow_dispatch mode - updating from main branch...');
-      
+
       // Get repository info
       const { data: repo } = await octokit.rest.repos.get({
         owner: context.repo.owner,
         repo: context.repo.repo,
       });
-      
+
       // Get latest commit on default branch
       const { data: commits } = await octokit.rest.repos.listCommits({
         owner: context.repo.owner,
@@ -68,9 +72,9 @@ async function run() {
         sha: repo.default_branch,
         per_page: 1,
       });
-      
+
       const latestCommit = commits[0];
-      
+
       // Get repository tree to list files
       const { data: tree } = await octokit.rest.git.getTree({
         owner: context.repo.owner,
@@ -78,212 +82,136 @@ async function run() {
         tree_sha: latestCommit.sha,
         recursive: 'true',
       });
-      
-      const filesList = tree.tree
-        .filter(item => item.type === 'blob')
-        .slice(0, 50) // Limit to first 50 files
-        .map(f => `- ${f.path}`)
-        .join('\n');
-      
-      changelogEntry = {
-        type: 'sync',
-        date: new Date().toISOString().split('T')[0],
-        title: `Documentation sync from ${repo.default_branch}`,
-        commit: latestCommit.sha.substring(0, 7),
-        author: latestCommit.commit.author.name,
-        url: latestCommit.html_url,
-        summary: `Synced documentation from ${repo.default_branch} branch.\n\nLatest commit: ${latestCommit.commit.message}`,
-        files: filesList,
-        repoDescription: repo.description || 'No description',
-      };
+
+      const filesList = formatTreeFiles(tree.tree);
+      changelogEntry = createSyncChangelogEntry(repo, latestCommit, filesList);
     } else {
       core.setFailed('This action must be run on a pull_request or workflow_dispatch event');
       return;
     }
 
-    core.info('Initializing Notion MCP client...');
+    core.info('Initializing Copilot SDK with Notion MCP server...');
 
-    // Initialize MCP client for Notion
-    const transport = new StdioClientTransport({
-      command: 'npx',
-      args: ['-y', '@notionhq/notion-mcp-server'],
-      env: {
-        ...process.env,
-        NOTION_TOKEN: notionToken,
+    // Initialize Copilot client
+    client = new CopilotClient();
+    await client.start();
+
+    core.info('Copilot client started');
+
+    // Create session with Notion MCP server
+    // The AI will have access to all Notion tools and decide which to use
+    session = await client.createSession({
+      model: 'gpt-4o',
+      streaming: false,
+      mcpServers: {
+        notion: {
+          type: 'local',
+          command: '/bin/bash',
+          args: ['-c', `NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
+          tools: ['*'], // Allow all Notion tools
+        },
+      },
+      systemMessage: {
+        content: `You are a documentation update assistant that manages Notion changelogs.
+You have access to Notion API tools through the MCP server.
+The target Notion page ID is: ${notionPageId}
+Be concise and efficient - use the minimum number of API calls needed.
+When creating changelog entries, format them nicely with headings, paragraphs, and dividers.`,
       },
     });
 
-    const mcpClient = new Client({
-      name: 'copilot-doc-updater',
-      version: '1.0.0',
+    core.info(`Copilot session created: ${session.sessionId}`);
+
+    // Step 1: Search for or create Changelog page
+    core.info('Searching for or creating Changelog page...');
+
+    const searchResult = await session.sendAndWait({
+      prompt: `Search for a child page named "Changelog" under the page with ID "${notionPageId}".
+If you find it, respond with just its page ID.
+If you don't find it, create a new page titled "Changelog" as a child of page "${notionPageId}" and respond with the new page ID.
+Only respond with the page ID, nothing else.`,
     });
 
-    await mcpClient.connect(transport);
+    // Extract the changelog page ID from the AI response
+    const changelogPageId = extractPageId(searchResult.content);
 
-    core.info('Connected to Notion MCP server');
-
-    // List available tools
-    const tools = await mcpClient.listTools();
-    core.info(`Available Notion tools: ${tools.tools.map(t => t.name).join(', ')}`);
-
-    core.info('Searching for existing Changelog page...');
-
-    // Search for Changelog child page
-    let changelogPageId = null;
-    try {
-      const searchResult = await mcpClient.callTool({
-        name: 'notion_search',
-        arguments: {
-          query: 'Changelog',
-        },
-      });
-      
-      const searchData = JSON.parse(searchResult.content[0].text);
-      const changelogPage = searchData.results?.find(
-        page => page.parent?.page_id === notionPageId && 
-                page.properties?.title?.title?.[0]?.plain_text === 'Changelog'
-      );
-      
-      if (changelogPage) {
-        changelogPageId = changelogPage.id;
-        core.info(`Found existing Changelog page: ${changelogPageId}`);
-      }
-    } catch (error) {
-      core.warning(`Search failed: ${error.message}`);
-    }
-
-    // Create Changelog page if it doesn't exist
     if (!changelogPageId) {
-      core.info('Creating new Changelog page...');
-      try {
-        const createResult = await mcpClient.callTool({
-          name: 'notion_create_page',
-          arguments: {
-            parent_page_id: notionPageId,
-            title: 'Changelog',
-            properties: {},
-          },
-        });
-        
-        const createData = JSON.parse(createResult.content[0].text);
-        changelogPageId = createData.id;
-        core.info(`Created Changelog page: ${changelogPageId}`);
-      } catch (error) {
-        core.setFailed(`Failed to create Changelog page: ${error.message}`);
-        await mcpClient.close();
-        return;
-      }
-    }
-
-    // Build changelog blocks based on entry type
-    const headingText = changelogEntry.type === 'pr'
-      ? `${changelogEntry.date} - ${changelogEntry.title}`
-      : `${changelogEntry.date} - ${changelogEntry.title}`;
-    
-    const referenceText = changelogEntry.type === 'pr'
-      ? `PR #${changelogEntry.prNumber} by @${changelogEntry.author}`
-      : `Commit ${changelogEntry.commit} by ${changelogEntry.author}`;
-
-    // Append changelog entry to the page
-    core.info('Appending changelog entry...');
-    try {
-      await mcpClient.callTool({
-        name: 'notion_append_block_children',
-        arguments: {
-          block_id: changelogPageId,
-          children: [
-            {
-              type: 'heading_2',
-              heading_2: {
-                rich_text: [
-                  {
-                    type: 'text',
-                    text: {
-                      content: headingText,
-                    },
-                  },
-                ],
-              },
-            },
-            {
-              type: 'paragraph',
-              paragraph: {
-                rich_text: [
-                  {
-                    type: 'text',
-                    text: {
-                      content: referenceText,
-                      link: { url: changelogEntry.url },
-                    },
-                  },
-                ],
-              },
-            },
-            {
-              type: 'paragraph',
-              paragraph: {
-                rich_text: [
-                  {
-                    type: 'text',
-                    text: {
-                      content: changelogEntry.summary.substring(0, 2000),
-                    },
-                  },
-                ],
-              },
-            },
-            {
-              type: 'toggle',
-              toggle: {
-                rich_text: [
-                  {
-                    type: 'text',
-                    text: {
-                      content: 'Changed files',
-                    },
-                  },
-                ],
-                children: [
-                  {
-                    type: 'code',
-                    code: {
-                      rich_text: [
-                        {
-                          type: 'text',
-                          text: {
-                            content: changelogEntry.files,
-                          },
-                        },
-                      ],
-                      language: 'plain text',
-                    },
-                  },
-                ],
-              },
-            },
-            {
-              type: 'divider',
-              divider: {},
-            },
-          ],
-        },
-      });
-      
-      core.info('Changelog entry added successfully');
-    } catch (error) {
-      core.setFailed(`Failed to append changelog entry: ${error.message}`);
-      await mcpClient.close();
+      core.setFailed('Failed to find or create Changelog page');
       return;
     }
 
-    // Close MCP connection
-    await mcpClient.close();
+    core.info(`Using Changelog page: ${changelogPageId}`);
 
+    // Step 2: Append changelog entry using AI
+    core.info('Appending changelog entry...');
+
+    await session.sendAndWait({
+      prompt: buildChangelogPrompt(changelogEntry, changelogPageId),
+    });
+
+    core.info('Changelog entry added successfully');
     core.info('Documentation update completed successfully');
     core.setOutput('changelog-page-id', changelogPageId);
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
+  } finally {
+    // Clean up resources
+    if (session) {
+      try {
+        await session.destroy();
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    if (client) {
+      try {
+        await client.stop();
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
   }
+}
+
+/**
+ * Extract a Notion page ID from AI response text.
+ * Handles various formats like UUIDs with/without dashes.
+ */
+function extractPageId(text) {
+  if (!text) return null;
+
+  // Match UUID format (with or without dashes)
+  const uuidPattern = /[a-f0-9]{8}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{12}/gi;
+  const matches = text.match(uuidPattern);
+
+  return matches ? matches[0].replace(/-/g, '') : null;
+}
+
+/**
+ * Build a natural language prompt for creating a changelog entry.
+ */
+function buildChangelogPrompt(entry, pageId) {
+  // entry.files is a pre-formatted string from formatPRFiles/formatTreeFiles
+  const filesSection = entry.files && entry.files.trim().length > 0
+    ? `\n\n**Toggle block titled "Changed Files":** containing the following list:\n${entry.files}`
+    : '';
+
+  const referenceText = entry.type === 'pr'
+    ? `PR #${entry.prNumber} by @${entry.author}`
+    : `Commit ${entry.commit} by ${entry.author}`;
+
+  return `Append a new changelog entry to page "${pageId}" with the following content:
+
+**Heading (heading_2):** ${entry.date} - ${entry.title}
+
+**Link paragraph:** ${referenceText} - [View on GitHub](${entry.url})
+
+**Summary paragraph:** ${entry.summary.substring(0, 2000)}
+${filesSection}
+
+**Divider** at the end to separate from future entries.
+
+Use the Notion API to append these blocks. Be efficient and make a single API call if possible.`;
 }
 
 run();
