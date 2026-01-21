@@ -32768,18 +32768,29 @@ When updating documentation, preserve the existing structure and only update rel
     session.on((event) => {
       if (event.type === 'tool.execution_start') {
         core.info(`🔧 AI calling tool: ${event.data.toolName}`);
+        if (event.data.input) {
+          core.info(`   Input: ${JSON.stringify(event.data.input).substring(0, 500)}`);
+        }
       } else if (event.type === 'tool.execution_end') {
         core.info(`✅ Tool completed: ${event.data.toolName}`);
+        if (event.data.output) {
+          core.info(`   Output: ${JSON.stringify(event.data.output).substring(0, 500)}`);
+        }
+      } else if (event.type === 'assistant.message_delta') {
+        // Log streaming response chunks
+        core.info(`📝 AI response chunk: ${event.data.deltaContent}`);
       } else if (event.type === 'error') {
         core.error(`❌ Session error: ${JSON.stringify(event.data)}`);
+      } else {
+        // Log all other events for debugging
+        core.info(`📌 Event: ${event.type}`);
       }
     });
 
     // Step 1: Search for or create Changelog page
     core.info('Searching for or creating Changelog page...');
 
-    const searchResult = await session.sendAndWait({
-      prompt: `I need to find or create a "Changelog" page under the parent page with ID "${notionPageId}".
+    const changelogSearchPrompt = `I need to find or create a "Changelog" page under the parent page with ID "${notionPageId}".
 
 First, try to retrieve the blocks/children of page "${notionPageId}" to see if there's already a child page named "Changelog".
 
@@ -32787,10 +32798,16 @@ If you find a "Changelog" child page, respond with ONLY its page ID (32 characte
 
 If you don't find one, create a new page with title "Changelog" as a child of page "${notionPageId}", then respond with ONLY the new page ID (32 characters, no dashes).
 
-Your response must be ONLY the page ID, nothing else. Example format: 1234567890abcdef1234567890abcdef`,
+Your response must be ONLY the page ID, nothing else. Example format: 1234567890abcdef1234567890abcdef`;
+
+    core.info(`📤 Sending prompt:\n${changelogSearchPrompt}`);
+
+    const searchResult = await session.sendAndWait({
+      prompt: changelogSearchPrompt,
     });
 
-    core.info(`Changelog search AI response: ${searchResult.content}`);
+    core.info(`📥 Full AI response object: ${JSON.stringify(searchResult)}`);
+    core.info(`📥 AI response content: ${searchResult.content}`);
 
     // Extract the changelog page ID from the AI response
     const changelogPageId = extractPageId(searchResult.content);
