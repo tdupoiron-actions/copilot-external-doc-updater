@@ -32325,7 +32325,6 @@ module.exports = parseParams
 var __webpack_exports__ = {};
 const core = __nccwpck_require__(7484);
 const github = __nccwpck_require__(3228);
-const path = __nccwpck_require__(6928);
 const {
   formatPRFiles,
   formatTreeFiles,
@@ -32337,10 +32336,6 @@ const {
   buildChangelogPrompt,
   buildDocUpdatePrompt,
 } = __nccwpck_require__(5804);
-
-// Force ncc to bundle the Notion MCP server CLI as an asset in dist/
-// ncc transforms require.resolve() to the correct bundled path at build time
-const notionMcpServerPath = __nccwpck_require__.ab + "cli.mjs";
 
 /**
  * Main entry point for the GitHub Action.
@@ -32462,16 +32457,16 @@ async function run() {
 
     // Create session with Notion MCP server
     // The AI will have access to all Notion tools and decide which to use
-    // Use the bundled notion-mcp-server binary (ncc transforms the path at build time)
+    // Use bash wrapper to spawn npx with NOTION_TOKEN environment variable
+    // This approach is more reliable than using the bundled binary directly
     session = await client.createSession({
       model,
-      streaming: false,
+      streaming: true, // Use streaming mode for better stream lifecycle management
       mcpServers: {
         notion: {
           type: 'local',
-          command: process.execPath,
-          args: [__nccwpck_require__.ab + "cli.mjs"],
-          env: { NOTION_TOKEN: notionToken },
+          command: '/bin/bash',
+          args: ['-c', `NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
           tools: ['*'], // Allow all Notion tools
         },
       },
@@ -32534,6 +32529,9 @@ Only respond with the page ID, nothing else.`,
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
   } finally {
+    // Small delay to allow any pending stream writes to complete
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
     // Clean up resources
     if (session) {
       try {
