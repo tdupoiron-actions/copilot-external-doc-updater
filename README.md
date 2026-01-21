@@ -31,9 +31,23 @@ GitHub Action → Copilot SDK → Notion MCP Server → Notion API
 |-------|-------------|----------|---------|
 | `notion-token` | Notion API integration token | Yes | - |
 | `notion-page-id` | Target Notion page ID (parent for Changelog) | Yes | - |
-| `github-token` | GitHub token for API access | Yes | `${{ github.token }}` |
+| `github-token` | GitHub token with Copilot access (must be a PAT, see below) | Yes | `${{ github.token }}` |
 | `model` | AI model to use (e.g., `gpt-4o`, `gpt-4.1`, `claude-sonnet-4`) | No | `gpt-4o` |
 | `update-mode` | What to update: `changelog-only` or `changelog-and-doc` | No | `changelog-and-doc` |
+
+> ⚠️ **Important: GitHub Token Requirements**
+>
+> The `github-token` input **must be a Personal Access Token (PAT)** with Copilot access—the default `GITHUB_TOKEN` will not work. This is because:
+>
+> 1. **Copilot API Access**: The GitHub Copilot SDK requires authentication with a token that has Copilot permissions. The built-in `GITHUB_TOKEN` is scoped to repository operations and does not include Copilot API access.
+> 2. **User Context**: Copilot features are tied to user accounts with active Copilot subscriptions. A PAT carries your user identity and subscription context.
+>
+> **To create a suitable PAT:**
+> 1. Go to [GitHub Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens)
+> 2. Create a new token (classic or fine-grained)
+> 3. Ensure your account has an active GitHub Copilot subscription
+> 4. Store the token as a repository secret (e.g., `COPILOT_TOKEN`)
+> 5. Use `${{ secrets.COPILOT_TOKEN }}` in your workflow
 
 ### Update Modes
 
@@ -60,7 +74,7 @@ jobs:
         with:
           notion-token: ${{ secrets.NOTION_TOKEN }}
           notion-page-id: ${{ secrets.NOTION_PAGE_ID }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.COPILOT_TOKEN }}  # Must be a PAT with Copilot access
           model: 'claude-sonnet-4'  # or gpt-4o, gpt-4.1, etc.
           update-mode: 'changelog-and-doc'
 ```
@@ -74,7 +88,7 @@ If you only want to track changes without syncing documentation:
   with:
     notion-token: ${{ secrets.NOTION_TOKEN }}
     notion-page-id: ${{ secrets.NOTION_PAGE_ID }}
-    github-token: ${{ secrets.GITHUB_TOKEN }}
+    github-token: ${{ secrets.COPILOT_TOKEN }}  # Must be a PAT with Copilot access
     update-mode: 'changelog-only'
 ```
 
