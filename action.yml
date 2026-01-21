@@ -1,0 +1,23 @@
+name: 'Copilot External Doc Updater'
+description: 'GitHub Action using Copilot SDK + Notion MCP to update documentation on PR merge'
+author: 'tdupoiron-actions'
+
+branding:
+  icon: 'book-open'
+  color: 'blue'
+
+inputs:
+  notion-token:
+    description: 'Notion API token for authentication'
+    required: true
+  notion-page-id:
+    description: 'The ID of the Notion page to update'
+    required: true
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+    default: ${{ github.token }}
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

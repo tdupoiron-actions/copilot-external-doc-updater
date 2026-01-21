@@ -1,0 +1,33 @@
+name: Test Notion Documentation Updater
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      update-from-main:
+        description: 'Update documentation from main branch code'
+        required: false
+        default: 'true'
+        type: boolean
+
+jobs:
+  update-docs:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Update Notion Documentation
+        uses: ./
+        with:
+          notion-token: ${{ secrets.NOTION_TOKEN }}
+          notion-page-id: ${{ secrets.NOTION_PAGE_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
