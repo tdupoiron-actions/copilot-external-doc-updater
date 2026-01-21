@@ -68,8 +68,14 @@ async function testNotionConnection() {
       mcpServers: {
         notion: {
           type: 'local',
-          command: '/bin/bash',
-          args: ['-c', `NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
+          command: 'npx',
+          args: ['-y', '@notionhq/notion-mcp-server'],
+          env: {
+            NOTION_TOKEN: notionToken,
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            NODE_OPTIONS: '--no-warnings', // Suppress experimental warnings
+          },
           tools: ['*'], // Allow all Notion tools
         },
       },

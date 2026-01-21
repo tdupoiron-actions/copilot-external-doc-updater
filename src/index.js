@@ -132,16 +132,21 @@ async function run() {
 
     // Create session with Notion MCP server
     // The AI will have access to all Notion tools and decide which to use
-    // Use bash wrapper to spawn npx with NOTION_TOKEN environment variable
-    // This approach is more reliable than using the bundled binary directly
+    // Use env to pass NOTION_TOKEN to the subprocess - more reliable on CI
     session = await client.createSession({
       model,
       streaming: true, // Use streaming mode for better stream lifecycle management
       mcpServers: {
         notion: {
           type: 'local',
-          command: '/bin/bash',
-          args: ['-c', `NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
+          command: 'npx',
+          args: ['-y', '@notionhq/notion-mcp-server'],
+          env: {
+            NOTION_TOKEN: notionToken,
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            NODE_OPTIONS: '--no-warnings', // Suppress experimental warnings
+          },
           tools: ['*'], // Allow all Notion tools
         },
       },
@@ -204,22 +209,35 @@ Only respond with the page ID, nothing else.`,
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
   } finally {
-    // Small delay to allow any pending stream writes to complete
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Graceful cleanup with longer delay for CI environments
+    // The delay allows pending stream writes to complete before destroying resources
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // Clean up resources
+    // Clean up resources - session first, then client
     if (session) {
       try {
-        await session.destroy();
-      } catch {
-        // Ignore cleanup errors
+        await Promise.race([
+          session.destroy(),
+          new Promise((resolve) => setTimeout(resolve, 5000)), // Timeout after 5s
+        ]);
+      } catch (cleanupError) {
+        // Ignore cleanup errors - stream may already be destroyed
+        core.debug(`Session cleanup: ${cleanupError.message}`);
       }
     }
+
+    // Additional delay before stopping client
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
     if (client) {
       try {
-        await client.stop();
-      } catch {
+        await Promise.race([
+          client.stop(),
+          new Promise((resolve) => setTimeout(resolve, 5000)), // Timeout after 5s
+        ]);
+      } catch (cleanupError) {
         // Ignore cleanup errors
+        core.debug(`Client cleanup: ${cleanupError.message}`);
       }
     }
   }
