@@ -11,6 +11,10 @@ on:
         required: false
         type: boolean
 
+permissions:
+  contents: read
+  models: read
+
 jobs:
   update-docs:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
@@ -30,5 +34,5 @@ jobs:
         with:
           notion-token: ${{ secrets.NOTION_TOKEN }}
           notion-page-id: ${{ secrets.NOTION_PAGE_ID }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.COPILOT_TOKEN }}
           model: 'claude-sonnet-4'  # or gpt-4.1, etc.
