@@ -2,6 +2,10 @@
 
 A GitHub Action that automatically updates Notion documentation using the **GitHub Copilot SDK** with **Notion MCP Server** integration. The AI decides which Notion API tools to use based on natural language prompts.
 
+> ⚠️ **Self-Hosted Runners Only**
+>
+> This action currently only works on **self-hosted runners**. GitHub-hosted runners experience stream lifecycle issues with the MCP server subprocess. We are investigating a fix for GitHub-hosted runner support.
+
 ## Features
 
 - 🤖 **AI-Driven**: Uses GitHub Copilot SDK to intelligently interact with Notion
@@ -66,7 +70,7 @@ on:
 jobs:
   update-docs:
     if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # Required: GitHub-hosted runners are not currently supported
     steps:
       - uses: actions/checkout@v4
 

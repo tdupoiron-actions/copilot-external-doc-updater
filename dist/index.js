@@ -32730,25 +32730,26 @@ async function run() {
 
     core.info(`Initializing Copilot SDK with Notion MCP server (model: ${model})...`);
 
-    // Initialize Copilot client
-    client = new CopilotClient();
+    // Initialize Copilot client with extended timeout
+    client = new CopilotClient({
+      timeout: 300000, // 5 minutes
+    });
     await client.start();
 
     core.info('Copilot client started');
 
     // Create session with Notion MCP server
     // The AI will have access to all Notion tools and decide which to use
-    // Use npx to ensure the MCP server is available on any runner
+    // Use shell wrapper to ensure NOTION_TOKEN is properly passed to npx subprocess
     session = await client.createSession({
       model,
+      streaming: true, // Enable streaming for better responsiveness
+      timeout: 300000, // 5 minutes timeout for session operations
       mcpServers: {
         notion: {
           type: 'local',
-          command: 'npx',
-          args: ['-y', '@notionhq/notion-mcp-server'],
-          env: {
-            NOTION_TOKEN: notionToken,
-          },
+          command: '/bin/sh',
+          args: ['-c', `NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
           tools: ['*'], // Allow all Notion tools
         },
       },
@@ -32764,11 +32765,47 @@ When updating documentation, preserve the existing structure and only update rel
 
     core.info(`Copilot session created: ${session.sessionId}`);
 
+    // Give MCP server time to fully initialize before sending prompts
+    core.info('Waiting for MCP server to initialize...');
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    core.info('MCP server should be ready');
+
+    // Timeout for AI operations (5 minutes to allow for complex Notion operations)
+    const AI_TIMEOUT = 300000;
+
+    // Helper function to wrap sendAndWait with a custom timeout
+    const sendWithTimeout = async (prompt, timeoutMs = AI_TIMEOUT) => {
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Custom timeout after ${timeoutMs}ms`)), timeoutMs);
+      });
+      return Promise.race([
+        session.sendAndWait({ prompt }),
+        timeoutPromise,
+      ]);
+    };
+
+    // Add event listener for debugging - only log tool calls and errors
+    session.on((event) => {
+      if (event.type === 'tool.execution_start') {
+        core.info(`🔧 AI calling tool: ${event.data.toolName}`);
+        if (event.data.input) {
+          core.info(`   Input: ${JSON.stringify(event.data.input).substring(0, 500)}`);
+        }
+      } else if (event.type === 'tool.execution_end') {
+        core.info(`✅ Tool completed: ${event.data.toolName}`);
+        if (event.data.output) {
+          core.info(`   Output: ${JSON.stringify(event.data.output).substring(0, 500)}`);
+        }
+      } else if (event.type === 'error') {
+        core.error(`❌ Session error: ${JSON.stringify(event.data)}`);
+      }
+      // Ignore other events (pending_messages.modified, assistant.message_delta, etc.)
+    });
+
     // Step 1: Search for or create Changelog page
     core.info('Searching for or creating Changelog page...');
 
-    const searchResult = await session.sendAndWait({
-      prompt: `I need to find or create a "Changelog" page under the parent page with ID "${notionPageId}".
+    const changelogSearchPrompt = `I need to find or create a "Changelog" page under the parent page with ID "${notionPageId}".
 
 First, try to retrieve the blocks/children of page "${notionPageId}" to see if there's already a child page named "Changelog".
 
@@ -32776,16 +32813,23 @@ If you find a "Changelog" child page, respond with ONLY its page ID (32 characte
 
 If you don't find one, create a new page with title "Changelog" as a child of page "${notionPageId}", then respond with ONLY the new page ID (32 characters, no dashes).
 
-Your response must be ONLY the page ID, nothing else. Example format: 1234567890abcdef1234567890abcdef`,
-    });
+Your response must be ONLY the page ID, nothing else. Example format: 1234567890abcdef1234567890abcdef`;
 
-    core.debug(`Changelog search result: ${searchResult.content}`);
+    core.info(`📤 Sending prompt:\n${changelogSearchPrompt}`);
+
+    const searchResult = await sendWithTimeout(changelogSearchPrompt);
+
+    core.info(`📥 Full AI response object: ${JSON.stringify(searchResult)}`);
+    
+    // Handle both SDK response formats: searchResult.content or searchResult.data.content
+    const responseContent = searchResult.content || (searchResult.data && searchResult.data.content) || '';
+    core.info(`📥 AI response content: ${responseContent}`);
 
     // Extract the changelog page ID from the AI response
-    const changelogPageId = extractPageId(searchResult.content);
+    const changelogPageId = extractPageId(responseContent);
 
     if (!changelogPageId) {
-      core.error(`AI response: ${searchResult.content}`);
+      core.error(`AI response: ${responseContent}`);
       core.setFailed('Failed to find or create Changelog page - could not extract page ID from AI response');
       return;
     }
@@ -32795,9 +32839,11 @@ Your response must be ONLY the page ID, nothing else. Example format: 1234567890
     // Step 2: Append changelog entry using AI
     core.info('Appending changelog entry...');
 
-    await session.sendAndWait({
-      prompt: buildChangelogPrompt(changelogEntry, changelogPageId),
-    });
+    const changelogPrompt = buildChangelogPrompt(changelogEntry, changelogPageId);
+    core.info(`📤 Sending changelog prompt:\n${changelogPrompt}`);
+
+    const changelogResult = await sendWithTimeout(changelogPrompt);
+    core.info(`📥 Changelog AI response: ${changelogResult.content || (changelogResult.data && changelogResult.data.content) || ''}`);
 
     core.info('Changelog entry added successfully');
 
@@ -32805,9 +32851,11 @@ Your response must be ONLY the page ID, nothing else. Example format: 1234567890
     if (updateMode !== 'changelog-only' && changelogEntry.docContent && changelogEntry.hasReadme) {
       core.info('Updating main documentation page...');
 
-      await session.sendAndWait({
-        prompt: buildDocUpdatePrompt(changelogEntry, notionPageId),
-      });
+      const docPrompt = buildDocUpdatePrompt(changelogEntry, notionPageId);
+      core.info(`📤 Sending doc update prompt:\n${docPrompt.substring(0, 500)}...`);
+
+      const docResult = await sendWithTimeout(docPrompt);
+      core.info(`📥 Doc update AI response: ${docResult.content || (docResult.data && docResult.data.content) || ''}`);
 
       core.info('Main documentation page updated successfully');
     } else if (updateMode !== 'changelog-only') {
