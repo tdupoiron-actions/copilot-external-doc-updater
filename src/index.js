@@ -13,6 +13,94 @@ const {
 } = require('./utils');
 
 /**
+ * Creates a fresh Copilot session with Notion MCP server.
+ * Each session is independent to avoid idle state issues.
+ *
+ * @param {CopilotClient} client - Initialized Copilot client
+ * @param {string} notionToken - Notion API token
+ * @param {string} notionPageId - Target Notion page ID
+ * @param {string} model - AI model to use
+ * @returns {Promise<Session>} New session ready for use
+ */
+async function createNotionSession(client, notionToken, notionPageId, model) {
+  const session = await client.createSession({
+    model,
+    streaming: true,
+    timeout: 120000, // 2 minutes timeout for session operations
+    mcpServers: {
+      notion: {
+        type: 'local',
+        command: '/bin/sh',
+        args: ['-c', `NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
+        tools: ['*'],
+      },
+    },
+    systemMessage: {
+      content: `You are a documentation update assistant that manages Notion documentation and changelogs.
+You have access to Notion API tools through the MCP server.
+The target Notion page ID is: ${notionPageId}
+Be concise and efficient - use the minimum number of API calls needed.
+When creating changelog entries, format them nicely with headings, paragraphs, and dividers.
+When updating documentation, preserve the existing structure and only update relevant sections.
+Respond concisely when done.`,
+    },
+  });
+
+  // Add event listener for debugging
+  session.on((event) => {
+    if (event.type === 'tool.execution_start') {
+      core.info(`🔧 AI calling tool: ${event.data.toolName}`);
+      if (event.data.input) {
+        core.info(`   Input: ${JSON.stringify(event.data.input).substring(0, 500)}`);
+      }
+    } else if (event.type === 'tool.execution_end') {
+      core.info(`✅ Tool completed: ${event.data.toolName}`);
+      if (event.data.output) {
+        core.info(`   Output: ${JSON.stringify(event.data.output).substring(0, 500)}`);
+      }
+    } else if (event.type === 'error') {
+      core.error(`❌ Session error: ${JSON.stringify(event.data)}`);
+    }
+  });
+
+  return session;
+}
+
+/**
+ * Sends a prompt to a session and waits for response with timeout.
+ * Properly cleans up the session after use.
+ *
+ * @param {Session} session - Copilot session
+ * @param {string} prompt - Prompt to send
+ * @param {number} timeoutMs - Timeout in milliseconds
+ * @returns {Promise<string>} Response content
+ */
+async function sendPromptAndCleanup(session, prompt, timeoutMs = 120000) {
+  try {
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms waiting for AI response`)), timeoutMs);
+    });
+
+    const result = await Promise.race([
+      session.sendAndWait({ prompt }),
+      timeoutPromise,
+    ]);
+
+    return result.content || (result.data && result.data.content) || '';
+  } finally {
+    // Always destroy session after use to prevent idle state issues
+    try {
+      await Promise.race([
+        session.destroy(),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    } catch (e) {
+      core.debug(`Session cleanup: ${e.message}`);
+    }
+  }
+}
+
+/**
  * Main entry point for the GitHub Action.
  * Uses the GitHub Copilot SDK with Notion MCP server to update documentation.
  * The AI decides which Notion API tools to use based on natural language prompts.
@@ -22,7 +110,6 @@ async function run() {
   const { CopilotClient } = await import('@github/copilot-sdk');
 
   let client = null;
-  let session = null;
 
   try {
     // Read inputs
@@ -124,79 +211,15 @@ async function run() {
 
     core.info(`Initializing Copilot SDK with Notion MCP server (model: ${model})...`);
 
-    // Initialize Copilot client with extended timeout
+    // Initialize Copilot client
     client = new CopilotClient({
-      timeout: 300000, // 5 minutes
+      timeout: 180000, // 3 minutes
     });
     await client.start();
 
     core.info('Copilot client started');
 
-    // Create session with Notion MCP server
-    // The AI will have access to all Notion tools and decide which to use
-    // Use shell wrapper to ensure NOTION_TOKEN is properly passed to npx subprocess
-    session = await client.createSession({
-      model,
-      streaming: true, // Enable streaming for better responsiveness
-      timeout: 300000, // 5 minutes timeout for session operations
-      mcpServers: {
-        notion: {
-          type: 'local',
-          command: '/bin/sh',
-          args: ['-c', `NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
-          tools: ['*'], // Allow all Notion tools
-        },
-      },
-      systemMessage: {
-        content: `You are a documentation update assistant that manages Notion documentation and changelogs.
-You have access to Notion API tools through the MCP server.
-The target Notion page ID is: ${notionPageId}
-Be concise and efficient - use the minimum number of API calls needed.
-When creating changelog entries, format them nicely with headings, paragraphs, and dividers.
-When updating documentation, preserve the existing structure and only update relevant sections based on the provided content.`,
-      },
-    });
-
-    core.info(`Copilot session created: ${session.sessionId}`);
-
-    // Give MCP server time to fully initialize before sending prompts
-    core.info('Waiting for MCP server to initialize...');
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    core.info('MCP server should be ready');
-
-    // Timeout for AI operations (5 minutes to allow for complex Notion operations)
-    const AI_TIMEOUT = 300000;
-
-    // Helper function to wrap sendAndWait with a custom timeout
-    const sendWithTimeout = async (prompt, timeoutMs = AI_TIMEOUT) => {
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`Custom timeout after ${timeoutMs}ms`)), timeoutMs);
-      });
-      return Promise.race([
-        session.sendAndWait({ prompt }),
-        timeoutPromise,
-      ]);
-    };
-
-    // Add event listener for debugging - only log tool calls and errors
-    session.on((event) => {
-      if (event.type === 'tool.execution_start') {
-        core.info(`🔧 AI calling tool: ${event.data.toolName}`);
-        if (event.data.input) {
-          core.info(`   Input: ${JSON.stringify(event.data.input).substring(0, 500)}`);
-        }
-      } else if (event.type === 'tool.execution_end') {
-        core.info(`✅ Tool completed: ${event.data.toolName}`);
-        if (event.data.output) {
-          core.info(`   Output: ${JSON.stringify(event.data.output).substring(0, 500)}`);
-        }
-      } else if (event.type === 'error') {
-        core.error(`❌ Session error: ${JSON.stringify(event.data)}`);
-      }
-      // Ignore other events (pending_messages.modified, assistant.message_delta, etc.)
-    });
-
-    // Step 1: Search for or create Changelog page
+    // Step 1: Search for or create Changelog page (using dedicated session)
     core.info('Searching for or creating Changelog page...');
 
     const changelogSearchPrompt = `I need to find or create a "Changelog" page under the parent page with ID "${notionPageId}".
@@ -211,12 +234,13 @@ Your response must be ONLY the page ID, nothing else. Example format: 1234567890
 
     core.info(`📤 Sending prompt:\n${changelogSearchPrompt}`);
 
-    const searchResult = await sendWithTimeout(changelogSearchPrompt);
+    let session1 = await createNotionSession(client, notionToken, notionPageId, model);
+    core.info(`Copilot session 1 created: ${session1.sessionId}`);
 
-    core.info(`📥 Full AI response object: ${JSON.stringify(searchResult)}`);
-    
-    // Handle both SDK response formats: searchResult.content or searchResult.data.content
-    const responseContent = searchResult.content || (searchResult.data && searchResult.data.content) || '';
+    // Give MCP server time to initialize
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    const responseContent = await sendPromptAndCleanup(session1, changelogSearchPrompt, 120000);
     core.info(`📥 AI response content: ${responseContent}`);
 
     // Extract the changelog page ID from the AI response
@@ -230,14 +254,20 @@ Your response must be ONLY the page ID, nothing else. Example format: 1234567890
 
     core.info(`Using Changelog page: ${changelogPageId}`);
 
-    // Step 2: Append changelog entry using AI
+    // Step 2: Append changelog entry using AI (new session)
     core.info('Appending changelog entry...');
 
     const changelogPrompt = buildChangelogPrompt(changelogEntry, changelogPageId);
     core.info(`📤 Sending changelog prompt:\n${changelogPrompt}`);
 
-    const changelogResult = await sendWithTimeout(changelogPrompt);
-    core.info(`📥 Changelog AI response: ${changelogResult.content || (changelogResult.data && changelogResult.data.content) || ''}`);
+    let session2 = await createNotionSession(client, notionToken, notionPageId, model);
+    core.info(`Copilot session 2 created: ${session2.sessionId}`);
+
+    // Give MCP server time to initialize
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    const changelogResponse = await sendPromptAndCleanup(session2, changelogPrompt, 120000);
+    core.info(`📥 Changelog AI response: ${changelogResponse}`);
 
     core.info('Changelog entry added successfully');
 
@@ -248,8 +278,14 @@ Your response must be ONLY the page ID, nothing else. Example format: 1234567890
       const docPrompt = buildDocUpdatePrompt(changelogEntry, notionPageId);
       core.info(`📤 Sending doc update prompt:\n${docPrompt.substring(0, 500)}...`);
 
-      const docResult = await sendWithTimeout(docPrompt);
-      core.info(`📥 Doc update AI response: ${docResult.content || (docResult.data && docResult.data.content) || ''}`);
+      let session3 = await createNotionSession(client, notionToken, notionPageId, model);
+      core.info(`Copilot session 3 created: ${session3.sessionId}`);
+
+      // Give MCP server time to initialize
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+
+      const docResponse = await sendPromptAndCleanup(session3, docPrompt, 120000);
+      core.info(`📥 Doc update AI response: ${docResponse}`);
 
       core.info('Main documentation page updated successfully');
     } else if (updateMode !== 'changelog-only') {
@@ -261,27 +297,14 @@ Your response must be ONLY the page ID, nothing else. Example format: 1234567890
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
   } finally {
-    // Clean up resources - session first, then client
-    if (session) {
-      try {
-        await Promise.race([
-          session.destroy(),
-          new Promise((resolve) => setTimeout(resolve, 5000)), // Timeout after 5s
-        ]);
-      } catch (cleanupError) {
-        // Ignore cleanup errors - stream may already be destroyed
-        core.debug(`Session cleanup: ${cleanupError.message}`);
-      }
-    }
-
+    // Clean up client only (sessions are cleaned up after each use)
     if (client) {
       try {
         await Promise.race([
           client.stop(),
-          new Promise((resolve) => setTimeout(resolve, 5000)), // Timeout after 5s
+          new Promise((resolve) => setTimeout(resolve, 5000)),
         ]);
       } catch (cleanupError) {
-        // Ignore cleanup errors
         core.debug(`Client cleanup: ${cleanupError.message}`);
       }
     }
