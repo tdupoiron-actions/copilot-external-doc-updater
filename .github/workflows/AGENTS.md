@@ -15,7 +15,7 @@ The main workflow that tests and runs the Notion documentation updater action.
 
 ### Job: update-docs
 
-Runs on `ubuntu-latest` with Node.js 20. Only executes when:
+Runs on `ubuntu-latest` with Node.js 24. Only executes when:
 - Manually triggered via `workflow_dispatch`, OR
 - A pull request was merged (not just closed)
 
