@@ -132,16 +132,18 @@ async function run() {
 
     // Create session with Notion MCP server
     // The AI will have access to all Notion tools and decide which to use
-    // Try to use globally installed notion-mcp-server first, fallback to npx
-    // Pre-installing avoids npx download timing issues on CI
+    // Use notion-mcp-server directly (pre-installed globally in CI)
+    // Avoid shell wrappers that can cause stream lifecycle issues
     session = await client.createSession({
       model,
-      streaming: true, // Use streaming mode for better stream lifecycle management
       mcpServers: {
         notion: {
           type: 'local',
-          command: '/bin/bash',
-          args: ['-c', `NOTION_TOKEN=${notionToken} notion-mcp-server 2>/dev/null || NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
+          command: 'notion-mcp-server',
+          args: [],
+          env: {
+            NOTION_TOKEN: notionToken,
+          },
           tools: ['*'], // Allow all Notion tools
         },
       },
@@ -204,10 +206,6 @@ Only respond with the page ID, nothing else.`,
   } catch (error) {
     core.setFailed(`Action failed: ${error.message}`);
   } finally {
-    // Graceful cleanup with longer delay for CI environments
-    // The delay allows pending stream writes to complete before destroying resources
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
     // Clean up resources - session first, then client
     if (session) {
       try {
@@ -220,9 +218,6 @@ Only respond with the page ID, nothing else.`,
         core.debug(`Session cleanup: ${cleanupError.message}`);
       }
     }
-
-    // Additional delay before stopping client
-    await new Promise((resolve) => setTimeout(resolve, 500));
 
     if (client) {
       try {
