@@ -5,6 +5,11 @@ const {
   formatTreeFiles,
   createPRChangelogEntry,
   createSyncChangelogEntry,
+  fetchDocContent,
+  buildDocUpdateContext,
+  extractPageId,
+  buildChangelogPrompt,
+  buildDocUpdatePrompt,
 } = require('./utils');
 
 /**
@@ -24,6 +29,8 @@ async function run() {
     const notionToken = core.getInput('notion-token', { required: true });
     const notionPageId = core.getInput('notion-page-id', { required: true });
     const githubToken = core.getInput('github-token', { required: true });
+    const model = core.getInput('model') || 'gpt-4o';
+    const updateMode = core.getInput('update-mode') || 'changelog-and-doc';
 
     // Get context
     const context = github.context;
@@ -35,6 +42,7 @@ async function run() {
 
     let changelogEntry;
 
+    // Prepare changelog entry based on event type
     if (pr) {
       // PR-based update
       core.info('Running in PR mode...');
@@ -55,6 +63,18 @@ async function run() {
 
       const filesList = formatPRFiles(files);
       changelogEntry = createPRChangelogEntry(pullRequest, filesList);
+
+      // Fetch documentation content for doc updates
+      if (updateMode !== 'changelog-only') {
+        const docContent = await fetchDocContent(
+          octokit,
+          context.repo.owner,
+          context.repo.repo,
+          pullRequest.head.sha,
+          files,
+        );
+        changelogEntry = buildDocUpdateContext(changelogEntry, docContent);
+      }
     } else if (isWorkflowDispatch) {
       // Manual trigger - update from main branch
       core.info('Running in workflow_dispatch mode - updating from main branch...');
@@ -85,12 +105,24 @@ async function run() {
 
       const filesList = formatTreeFiles(tree.tree);
       changelogEntry = createSyncChangelogEntry(repo, latestCommit, filesList);
+
+      // Fetch documentation content for doc updates
+      if (updateMode !== 'changelog-only') {
+        const docContent = await fetchDocContent(
+          octokit,
+          context.repo.owner,
+          context.repo.repo,
+          latestCommit.sha,
+          tree.tree,
+        );
+        changelogEntry = buildDocUpdateContext(changelogEntry, docContent);
+      }
     } else {
       core.setFailed('This action must be run on a pull_request or workflow_dispatch event');
       return;
     }
 
-    core.info('Initializing Copilot SDK with Notion MCP server...');
+    core.info(`Initializing Copilot SDK with Notion MCP server (model: ${model})...`);
 
     // Initialize Copilot client
     client = new CopilotClient();
@@ -101,7 +133,7 @@ async function run() {
     // Create session with Notion MCP server
     // The AI will have access to all Notion tools and decide which to use
     session = await client.createSession({
-      model: 'gpt-4o',
+      model,
       streaming: false,
       mcpServers: {
         notion: {
@@ -112,11 +144,12 @@ async function run() {
         },
       },
       systemMessage: {
-        content: `You are a documentation update assistant that manages Notion changelogs.
+        content: `You are a documentation update assistant that manages Notion documentation and changelogs.
 You have access to Notion API tools through the MCP server.
 The target Notion page ID is: ${notionPageId}
 Be concise and efficient - use the minimum number of API calls needed.
-When creating changelog entries, format them nicely with headings, paragraphs, and dividers.`,
+When creating changelog entries, format them nicely with headings, paragraphs, and dividers.
+When updating documentation, preserve the existing structure and only update relevant sections based on the provided content.`,
       },
     });
 
@@ -150,6 +183,20 @@ Only respond with the page ID, nothing else.`,
     });
 
     core.info('Changelog entry added successfully');
+
+    // Step 3: Update main documentation page (if enabled and we have doc content)
+    if (updateMode !== 'changelog-only' && changelogEntry.docContent && changelogEntry.hasReadme) {
+      core.info('Updating main documentation page...');
+
+      await session.sendAndWait({
+        prompt: buildDocUpdatePrompt(changelogEntry, notionPageId),
+      });
+
+      core.info('Main documentation page updated successfully');
+    } else if (updateMode !== 'changelog-only') {
+      core.info('Skipping doc update: No README.md or documentation files found in changes');
+    }
+
     core.info('Documentation update completed successfully');
     core.setOutput('changelog-page-id', changelogPageId);
   } catch (error) {
@@ -171,47 +218,6 @@ Only respond with the page ID, nothing else.`,
       }
     }
   }
-}
-
-/**
- * Extract a Notion page ID from AI response text.
- * Handles various formats like UUIDs with/without dashes.
- */
-function extractPageId(text) {
-  if (!text) return null;
-
-  // Match UUID format (with or without dashes)
-  const uuidPattern = /[a-f0-9]{8}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{12}/gi;
-  const matches = text.match(uuidPattern);
-
-  return matches ? matches[0].replace(/-/g, '') : null;
-}
-
-/**
- * Build a natural language prompt for creating a changelog entry.
- */
-function buildChangelogPrompt(entry, pageId) {
-  // entry.files is a pre-formatted string from formatPRFiles/formatTreeFiles
-  const filesSection = entry.files && entry.files.trim().length > 0
-    ? `\n\n**Toggle block titled "Changed Files":** containing the following list:\n${entry.files}`
-    : '';
-
-  const referenceText = entry.type === 'pr'
-    ? `PR #${entry.prNumber} by @${entry.author}`
-    : `Commit ${entry.commit} by ${entry.author}`;
-
-  return `Append a new changelog entry to page "${pageId}" with the following content:
-
-**Heading (heading_2):** ${entry.date} - ${entry.title}
-
-**Link paragraph:** ${referenceText} - [View on GitHub](${entry.url})
-
-**Summary paragraph:** ${entry.summary.substring(0, 2000)}
-${filesSection}
-
-**Divider** at the end to separate from future entries.
-
-Use the Notion API to append these blocks. Be efficient and make a single API call if possible.`;
 }
 
 run();

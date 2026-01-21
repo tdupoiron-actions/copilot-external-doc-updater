@@ -3,6 +3,7 @@ name: Test Notion Documentation Updater
 on:
   pull_request:
     types: [closed]
+    
   workflow_dispatch:
     inputs:
       update-from-main:
@@ -30,3 +31,4 @@ jobs:
           notion-token: ${{ secrets.NOTION_TOKEN }}
           notion-page-id: ${{ secrets.NOTION_PAGE_ID }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          model: 'claude-sonnet-4'  # or gpt-4.1, etc.

@@ -17,6 +17,14 @@ inputs:
     description: 'GitHub token for API access'
     required: true
     default: ${{ github.token }}
+  model:
+    description: 'The AI model to use for Copilot SDK (e.g., gpt-4o, gpt-4.1, claude-sonnet-4)'
+    required: false
+    default: 'gpt-4o'
+  update-mode:
+    description: 'What to update: "changelog-only" (just changelog), "changelog-and-doc" (both changelog and main doc page)'
+    required: false
+    default: 'changelog-and-doc'
 
 runs:
   using: 'node20'

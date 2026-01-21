@@ -6,8 +6,10 @@ A GitHub Action that automatically updates Notion documentation using the **GitH
 
 - 🤖 **AI-Driven**: Uses GitHub Copilot SDK to intelligently interact with Notion
 - 📝 **Automatic Changelog**: Creates and updates changelog entries on PR merge
-- 🔄 **Manual Sync**: Supports workflow_dispatch for on-demand documentation updates
+- � **Documentation Sync**: Optionally syncs README.md content to Notion pages
+- 🔄 **Manual Sync**: Supports `workflow_dispatch` for on-demand documentation updates
 - 🔌 **MCP Integration**: Connects to Notion via the official Notion MCP Server
+- 🎯 **Flexible Models**: Supports multiple AI models (GPT-4o, GPT-4.1, Claude Sonnet 4, etc.)
 
 ## How It Works
 
@@ -19,16 +21,24 @@ GitHub Action → Copilot SDK → Notion MCP Server → Notion API
 2. **Context Gathering**: Collects PR details, changed files, or repository state
 3. **AI Session**: Creates a Copilot session with the Notion MCP server
 4. **Smart Updates**: AI searches for or creates a Changelog page, then appends formatted entries
+5. **Documentation Sync** (optional): Updates the main Notion page with README.md content
 
 ## Usage
 
 ### Inputs
 
-| Input | Description | Required |
-|-------|-------------|----------|
-| `notion-token` | Notion API integration token | Yes |
-| `notion-page-id` | Target Notion page ID (parent for Changelog) | Yes |
-| `github-token` | GitHub token for API access | Yes |
+| Input | Description | Required | Default |
+|-------|-------------|----------|---------|
+| `notion-token` | Notion API integration token | Yes | - |
+| `notion-page-id` | Target Notion page ID (parent for Changelog) | Yes | - |
+| `github-token` | GitHub token for API access | Yes | `${{ github.token }}` |
+| `model` | AI model to use (e.g., `gpt-4o`, `gpt-4.1`, `claude-sonnet-4`) | No | `gpt-4o` |
+| `update-mode` | What to update: `changelog-only` or `changelog-and-doc` | No | `changelog-and-doc` |
+
+### Update Modes
+
+- **`changelog-only`**: Only creates changelog entries in Notion, no documentation sync
+- **`changelog-and-doc`** (default): Creates changelog entries AND updates the main Notion page from README.md
 
 ### Example Workflow
 
@@ -44,11 +54,28 @@ jobs:
     if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: tdupoiron-actions/copilot-external-doc-updater@main
         with:
           notion-token: ${{ secrets.NOTION_TOKEN }}
           notion-page-id: ${{ secrets.NOTION_PAGE_ID }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          model: 'claude-sonnet-4'  # or gpt-4o, gpt-4.1, etc.
+          update-mode: 'changelog-and-doc'
+```
+
+### Changelog-Only Mode
+
+If you only want to track changes without syncing documentation:
+
+```yaml
+- uses: tdupoiron-actions/copilot-external-doc-updater@main
+  with:
+    notion-token: ${{ secrets.NOTION_TOKEN }}
+    notion-page-id: ${{ secrets.NOTION_PAGE_ID }}
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    update-mode: 'changelog-only'
 ```
 
 ### Setting Up Notion
@@ -58,11 +85,31 @@ jobs:
 3. Share your target Notion page with the integration
 4. Copy the page ID from the URL (the 32-character string after the page title)
 
+## What Gets Created in Notion
+
+### Changelog Entries
+
+For each PR merge or manual sync, the action creates a changelog entry with:
+
+- **Heading**: Date and PR title (or sync info)
+- **Reference**: Link to PR or commit on GitHub
+- **Summary**: PR description or commit message
+- **Changed Files**: Collapsible toggle with the list of modified files
+- **Divider**: Separates entries for readability
+
+### Documentation Sync (changelog-and-doc mode)
+
+When enabled, the action also:
+
+1. Fetches README.md and other documentation files from the repository
+2. Converts Markdown to Notion blocks (headings, code blocks, lists, links)
+3. Updates the main Notion page to reflect the current documentation
+
 ## Development
 
 ### Prerequisites
 
-- Node.js (v18 or higher)
+- Node.js v20 or higher
 - npm
 - GitHub Copilot access (for the SDK)
 
@@ -72,7 +119,7 @@ jobs:
 # Install dependencies
 npm install
 
-# Build the action
+# Build the action (required after any source changes)
 npm run build
 ```
 
@@ -95,25 +142,47 @@ NOTION_TOKEN=your_token NOTION_PAGE_ID=your_page_id npm run test:notion
 NOTION_TOKEN=your_token NOTION_PAGE_ID=your_page_id npm run test:notion -- --create-test
 ```
 
-### Test Structure
+You can also use a `.env` file for local testing (don't commit it!):
 
-Tests are located alongside source files with a `.test.js` suffix:
+```bash
+# .env
+NOTION_TOKEN=ntn_xxx
+NOTION_PAGE_ID=your_page_id
+```
 
-- `src/utils.test.js` - Unit tests for utility functions
-- `scripts/test-notion.mjs` - Integration test for Notion MCP connection
+### Project Structure
+
+```
+├── action.yml           # GitHub Action metadata and inputs
+├── src/
+│   ├── index.js         # Main entry point, orchestrates the action
+│   ├── utils.js         # Utility functions (formatting, changelog creation)
+│   └── utils.test.js    # Jest unit tests
+├── scripts/
+│   └── test-notion.mjs  # Manual integration test for Notion MCP
+└── dist/
+    └── index.js         # Bundled action (generated by ncc)
+```
 
 ## Architecture
 
-### Copilot SDK + MCP Server
+### Copilot SDK + MCP Server Integration
 
-The action uses the `@github/copilot-sdk` to create AI sessions that can interact with external tools via the Model Context Protocol (MCP):
+The action uses an AI-driven approach where:
+
+1. **CopilotClient** initializes a connection to the Copilot service
+2. **createSession()** configures the Notion MCP server as a tool provider
+3. **sendAndWait()** sends natural language prompts and lets AI decide which tools to use
 
 ```javascript
+// Dynamic import for ESM-only Copilot SDK
 const { CopilotClient } = await import('@github/copilot-sdk');
 
+// Initialize and start client
 const client = new CopilotClient();
 await client.start();
 
+// Create session with Notion MCP server
 const session = await client.createSession({
   model: 'gpt-4o',
   mcpServers: {
@@ -121,16 +190,30 @@ const session = await client.createSession({
       type: 'local',
       command: '/bin/bash',
       args: ['-c', `NOTION_TOKEN=${token} npx -y @notionhq/notion-mcp-server`],
-      tools: ['*'],
+      tools: ['*'], // Allow all Notion tools
     },
+  },
+  systemMessage: {
+    content: 'You are a documentation assistant...',
   },
 });
 
 // AI decides which Notion tools to use
-await session.sendAndWait({
+const result = await session.sendAndWait({
   prompt: 'Search for a Changelog page and append a new entry...',
 });
+
+// Cleanup
+await session.destroy();
+await client.stop();
 ```
+
+### Two Execution Modes
+
+The action handles two trigger types:
+
+1. **PR mode** (`pull_request` event): Extracts PR title, body, author, and changed files
+2. **Sync mode** (`workflow_dispatch` event): Syncs from default branch, uses latest commit info
 
 ### Dependencies
 
@@ -138,9 +221,17 @@ await session.sendAndWait({
 |---------|---------|
 | `@actions/core` | GitHub Action inputs/outputs/logging |
 | `@actions/github` | GitHub API client (Octokit) |
-| `@github/copilot-sdk` | Copilot SDK for AI-driven sessions |
-| `@notionhq/notion-mcp-server` | Notion MCP server (runtime dependency) |
-| `@vercel/ncc` | Bundle action for distribution |
+| `@github/copilot-sdk` | Copilot SDK for AI-driven sessions with MCP support |
+| `@notionhq/notion-mcp-server` | Notion MCP server (spawned via npx at runtime) |
+| `@vercel/ncc` | Bundle action for distribution (dev) |
+| `dotenv` | Load .env files for local testing (dev) |
+| `jest` | Unit testing framework (dev) |
+
+## Outputs
+
+| Output | Description |
+|--------|-------------|
+| `changelog-page-id` | The ID of the Changelog page that was used or created |
 
 ## License
 
