@@ -30,4 +30,4 @@ jobs:
           notion-token: ${{ secrets.NOTION_TOKEN }}
           notion-page-id: ${{ secrets.NOTION_PAGE_ID }}
           github-token: ${{ secrets.COPILOT_TOKEN }}
-          model: 'claude-sonnet-4'  # or gpt-4.1, etc.
+          model: 'gpt-4.1'
