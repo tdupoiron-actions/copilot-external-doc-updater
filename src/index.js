@@ -1,5 +1,6 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
+const path = require('path');
 const {
   formatPRFiles,
   formatTreeFiles,
@@ -11,6 +12,10 @@ const {
   buildChangelogPrompt,
   buildDocUpdatePrompt,
 } = require('./utils');
+
+// Force ncc to bundle the Notion MCP server CLI as an asset in dist/
+// ncc transforms require.resolve() to the correct bundled path at build time
+const notionMcpServerPath = require.resolve('@notionhq/notion-mcp-server/bin/cli.mjs');
 
 /**
  * Main entry point for the GitHub Action.
@@ -132,14 +137,16 @@ async function run() {
 
     // Create session with Notion MCP server
     // The AI will have access to all Notion tools and decide which to use
+    // Use the bundled notion-mcp-server binary (ncc transforms the path at build time)
     session = await client.createSession({
       model,
       streaming: false,
       mcpServers: {
         notion: {
           type: 'local',
-          command: '/bin/bash',
-          args: ['-c', `NOTION_TOKEN=${notionToken} npx -y @notionhq/notion-mcp-server`],
+          command: process.execPath,
+          args: [notionMcpServerPath],
+          env: { NOTION_TOKEN: notionToken },
           tools: ['*'], // Allow all Notion tools
         },
       },
