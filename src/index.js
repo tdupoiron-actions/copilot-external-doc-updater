@@ -156,8 +156,8 @@ When updating documentation, preserve the existing structure and only update rel
 
     core.info(`Copilot session created: ${session.sessionId}`);
 
-    // Timeout for AI operations (3 minutes to allow for complex Notion operations)
-    const AI_TIMEOUT = 180000;
+    // Timeout for AI operations (5 minutes to allow for complex Notion operations)
+    const AI_TIMEOUT = 300000;
 
     // Add event listener for debugging
     session.on((event) => {
