@@ -3468,6 +3468,13 @@ var external_node_child_process_ = __webpack_require__(1421);
 var external_node_net_ = __webpack_require__(7030);
 // EXTERNAL MODULE: ./node_modules/vscode-jsonrpc/node.js
 var node = __webpack_require__(2836);
+;// CONCATENATED MODULE: ./node_modules/@github/copilot-sdk/dist/sdkProtocolVersion.js
+const SDK_PROTOCOL_VERSION = 2;
+function getSdkProtocolVersion() {
+  return SDK_PROTOCOL_VERSION;
+}
+
+
 ;// CONCATENATED MODULE: ./node_modules/@github/copilot-sdk/dist/session.js
 class CopilotSession {
   /**
@@ -3755,13 +3762,6 @@ class CopilotSession {
 }
 
 
-;// CONCATENATED MODULE: ./node_modules/@github/copilot-sdk/dist/sdkProtocolVersion.js
-const SDK_PROTOCOL_VERSION = 1;
-function getSdkProtocolVersion() {
-  return SDK_PROTOCOL_VERSION;
-}
-
-
 ;// CONCATENATED MODULE: ./node_modules/@github/copilot-sdk/dist/client.js
 
 
@@ -3828,7 +3828,7 @@ class CopilotClient {
       useStdio: options.cliUrl ? false : options.useStdio ?? true,
       // Default to stdio unless cliUrl is provided
       cliUrl: options.cliUrl,
-      logLevel: options.logLevel || "info",
+      logLevel: options.logLevel || "debug",
       autoStart: options.autoStart ?? true,
       autoRestart: options.autoRestart ?? true,
       env: options.env ?? process.env
@@ -4080,7 +4080,10 @@ class CopilotClient {
       requestPermission: !!config.onPermissionRequest,
       streaming: config.streaming,
       mcpServers: config.mcpServers,
-      customAgents: config.customAgents
+      customAgents: config.customAgents,
+      configDir: config.configDir,
+      skillDirectories: config.skillDirectories,
+      disabledSkills: config.disabledSkills
     });
     const sessionId = response.sessionId;
     const session = new CopilotSession(sessionId, this.connection);
@@ -4133,7 +4136,9 @@ class CopilotClient {
       requestPermission: !!config.onPermissionRequest,
       streaming: config.streaming,
       mcpServers: config.mcpServers,
-      customAgents: config.customAgents
+      customAgents: config.customAgents,
+      skillDirectories: config.skillDirectories,
+      disabledSkills: config.disabledSkills
     });
     const resumedSessionId = response.sessionId;
     const session = new CopilotSession(resumedSessionId, this.connection);
@@ -4178,6 +4183,38 @@ class CopilotClient {
     }
     const result = await this.connection.sendRequest("ping", { message });
     return result;
+  }
+  /**
+   * Get CLI status including version and protocol information
+   */
+  async getStatus() {
+    if (!this.connection) {
+      throw new Error("Client not connected");
+    }
+    const result = await this.connection.sendRequest("status.get", {});
+    return result;
+  }
+  /**
+   * Get current authentication status
+   */
+  async getAuthStatus() {
+    if (!this.connection) {
+      throw new Error("Client not connected");
+    }
+    const result = await this.connection.sendRequest("auth.getStatus", {});
+    return result;
+  }
+  /**
+   * List available models with their metadata
+   * @throws Error if not authenticated
+   */
+  async listModels() {
+    if (!this.connection) {
+      throw new Error("Client not connected");
+    }
+    const result = await this.connection.sendRequest("models.list", {});
+    const response = result;
+    return response.models;
   }
   /**
    * Verify that the server's protocol version matches the SDK's expected version
@@ -4306,7 +4343,7 @@ class CopilotClient {
         spawnArgs = [this.options.cliPath, ...args];
       } else if (process.platform === "win32" && !isAbsolutePath) {
         command = "cmd";
-        spawnArgs = ["/c", `"${this.options.cliPath}"`, ...args];
+        spawnArgs = ["/c", `${this.options.cliPath}`, ...args];
       } else {
         command = this.options.cliPath;
         spawnArgs = args;

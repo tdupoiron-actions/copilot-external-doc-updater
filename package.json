@@ -23,7 +23,7 @@
   "dependencies": {
     "@actions/core": "^2.0.2",
     "@actions/github": "^7.0.0",
-    "@github/copilot-sdk": "^0.1.14",
+    "@github/copilot-sdk": "^0.1.15",
     "@notionhq/notion-mcp-server": "^2.0.0"
   },
   "devDependencies": {
