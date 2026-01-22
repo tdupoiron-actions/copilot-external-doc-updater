@@ -32645,19 +32645,26 @@ function sendPrompt(session, prompt, timeoutMs = 180000) {
       resolve(result);
     }
 
+    let toolsRunning = 0;
+
     session.on((event) => {
       lastActivity = Date.now();
       switch (event.type) {
         case 'tool.execution_start':
+          toolsRunning++;
           core.info(`🔧 Tool: ${event.data.toolName}`);
           break;
         case 'tool.execution_end':
+          toolsRunning--;
           core.info(`✅ Done: ${event.data.toolName}`);
           break;
         case 'assistant.message':
           if (event.data?.content) response = event.data.content;
-          core.info(`🤖 Response: ${response.substring(0, 500)}${response.length > 500 ? '...' : ''}`);
-          finish(response);
+          // Only finish if we have content and no tools are running
+          if (response && toolsRunning === 0) {
+            core.info(`🤖 Response: ${response.substring(0, 500)}${response.length > 500 ? '...' : ''}`);
+            finish(response);
+          }
           break;
         case 'assistant.message_delta':
           if (event.data?.deltaContent) response += event.data.deltaContent;
