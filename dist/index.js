@@ -32656,6 +32656,7 @@ function sendPrompt(session, prompt, timeoutMs = 180000) {
           break;
         case 'assistant.message':
           if (event.data?.content) response = event.data.content;
+          core.info(`🤖 Response: ${response.substring(0, 500)}${response.length > 500 ? '...' : ''}`);
           finish(response);
           break;
         case 'assistant.message_delta':
@@ -32668,6 +32669,7 @@ function sendPrompt(session, prompt, timeoutMs = 180000) {
       }
     });
 
+    core.info(`🤖 Prompt: ${prompt.substring(0, 200)}${prompt.length > 200 ? '...' : ''}`);
     session.send({ prompt }).catch((err) => {
       if (!done) reject(err);
     });
@@ -32782,7 +32784,6 @@ Check the page's children first. If "Changelog" exists, return its ID.
 Otherwise create it and return the new ID.
 Respond with ONLY the 32-character page ID (no dashes).`;
     const response1 = await sendPrompt(session1, findPrompt);
-    core.info(`Response: ${response1}`);
     const changelogPageId = extractPageId(response1);
     if (!changelogPageId) {
       core.setFailed('Failed to get Changelog page ID');
@@ -32795,7 +32796,6 @@ Respond with ONLY the 32-character page ID (no dashes).`;
     const session2 = await createSession(client, notionToken, notionPageId, model);
     const changelogPrompt = buildChangelogPrompt(changelogEntry, changelogPageId);
     const response2 = await sendPrompt(session2, changelogPrompt);
-    core.info(`Response: ${response2}`);
     core.info('Changelog entry added');
 
     // Step 3: Update documentation (if enabled)
@@ -32804,7 +32804,6 @@ Respond with ONLY the 32-character page ID (no dashes).`;
       const session3 = await createSession(client, notionToken, notionPageId, model);
       const docPrompt = buildDocUpdatePrompt(changelogEntry, notionPageId);
       const response3 = await sendPrompt(session3, docPrompt);
-      core.info(`Response: ${response3}`);
       core.info('Documentation updated');
     }
 
